@@ -30,6 +30,7 @@ whose server is gone, a stopped FUSE daemon) costs a bounded wait, not the seede
 from __future__ import annotations
 
 import logging
+import mimetypes
 import os
 import stat
 import threading
@@ -468,6 +469,7 @@ def _record_history(
                 Asset.job_id,
                 Asset.user_metadata,
                 Asset.preview_id,
+                Asset.mime_type,
                 Asset.created_at,
                 Asset.updated_at,
             ).where(Asset.content_id.in_(chunk))
@@ -480,12 +482,15 @@ def _record_history(
                 tags.setdefault(record_id, set()).add(tag_name)
         for record in records:
             path = path_of[record.content_id]
+            # The scan sets the extension's guess; anything else was set by a user.
+            scanned_mime = mimetypes.guess_type(path)[0]
             derived = role_of(path)
             derived_tags = derived[0] if derived is not None else frozenset()
             has_history = (
                 record.job_id is not None
                 or record.user_metadata is not None
                 or record.preview_id is not None
+                or record.mime_type not in (None, scanned_mime)
                 or record.updated_at - record.created_at > _EDITED_AFTER
                 or record.name != os.path.basename(path)
                 or bool(tags.get(record.id, set()) - derived_tags)

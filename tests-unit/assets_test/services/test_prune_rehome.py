@@ -730,3 +730,26 @@ def test_input_and_output_on_one_folder_in_two_case_spellings_stay_stable(folder
         assert _boot() == 0
         assert _records(session) == before
         assert _missing_count(session) == 0
+
+
+def test_a_mime_only_edit_right_after_creation_counts_as_history(folders, session, temp_dir):
+    older, newer = _duplicate_pair(folders, session, temp_dir)
+    record = _record_of(session, newer.content_id)
+    record.mime_type = "image/webp"  # f.png; updated_at left at its creation value
+    session.flush()
+
+    mark_contents_missing_outside_prefixes(session, [str(temp_dir / "real")])
+
+    assert _live(session, newer.content_id) == str(temp_dir / "real" / "f.png")
+    assert _records_on(session, newer.content_id) == {record.id}
+
+
+def test_the_scans_own_mime_guess_is_not_history(folders, session, temp_dir):
+    older, newer = _duplicate_pair(folders, session, temp_dir)
+    _record_of(session, newer.content_id).mime_type = "image/png"
+    session.flush()
+
+    mark_contents_missing_outside_prefixes(session, [str(temp_dir / "real")])
+
+    assert _live(session, older.content_id) == str(temp_dir / "real" / "f.png")
+    assert _live(session, newer.content_id) is None
