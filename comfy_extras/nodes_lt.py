@@ -807,19 +807,29 @@ class LTXVScheduler(io.ComfyNode):
         sigma_shift = (tokens) * mm + b
 
         power = 1
-        sigmas = torch.where(
-            sigmas != 0,
-            math.exp(sigma_shift) / (math.exp(sigma_shift) + (1 / sigmas - 1) ** power),
-            0,
-        )
+        # exp(sigma_shift) / (exp(sigma_shift) + (1 / sigma - 1) ** power), rewritten as a
+        # sigmoid so that exp(sigma_shift) is never materialized: in float32 it overflows
+        # to inf above sigma_shift ~= 88.72, and well below that it dominates the
+        # denominator enough that the quotient rounds to exactly 1.0 for every sigma.
+        logits = sigma_shift - power * torch.log(1 / sigmas - 1)
+        sigmas = torch.where(sigmas != 0, torch.sigmoid(logits), 0)
 
         # Stretch sigmas so that its final value matches the given terminal value.
         if stretch:
             non_zero_mask = sigmas != 0
-            non_zero_sigmas = sigmas[non_zero_mask]
-            one_minus_z = 1.0 - non_zero_sigmas
-            scale_factor = one_minus_z[-1] / (1.0 - terminal)
-            stretched = 1.0 - (one_minus_z / scale_factor)
+            # log(1 - sigma) taken from the logits instead of from 1.0 - sigma, whose
+            # cancellation destroys every significant bit once sigma is within an ulp of
+            # 1.0 -- that is what made the scale factor below exactly 0.
+            log_one_minus_z = torch.nn.functional.logsigmoid(-logits[non_zero_mask])
+            if torch.isinf(log_one_minus_z[-1]):
+                # The schedule has a single non-zero sigma, which is always exactly 1.0.
+                # The stretch below tends to terminal for any such sigma.
+                stretched = torch.full_like(log_one_minus_z, terminal)
+            else:
+                # 1 - (1 - sigma) / ((1 - sigma[-1]) / (1 - terminal)), in log space.
+                stretched = 1.0 - (1.0 - terminal) * torch.exp(
+                    log_one_minus_z - log_one_minus_z[-1]
+                )
             sigmas[non_zero_mask] = stretched
 
         return io.NodeOutput(sigmas)
